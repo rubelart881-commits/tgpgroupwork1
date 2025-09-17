@@ -1,204 +1,150 @@
-// Firebase configuration and functions
-let database: any = null
+// আসল Firebase-এর মডিউলগুলো ইম্পোর্ট করা হচ্ছে
+import { initializeApp, FirebaseApp } from "firebase/app";
+import { 
+  getDatabase, 
+  ref, 
+  set, 
+  get, 
+  onValue, 
+  Database,
+  Unsubscribe
+} from "firebase/database";
 
-export function initializeFirebase() {
-  // In a real implementation, you would initialize Firebase here
-  // For demo purposes, we'll use a mock database
-  if (!database) {
-    database = new MockFirebaseDatabase()
-  }
-  return database
-}
+// Vercel-এর Environment Variable থেকে Firebase কনফিগারেশন নেওয়া হচ্ছে
+const firebaseConfig = {
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  databaseURL: process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+};
 
-// Mock Firebase Database for demonstration
-class MockFirebaseDatabase {
-  private data: any = {
-    sessions: {},
-  }
-  private listeners: Map<string, Function[]> = new Map()
+// Firebase অ্যাপ ও ডেটাবেস ভেরিয়েবল
+let app: FirebaseApp;
+let database: Database;
 
-  async set(path: string, value: any) {
-    const pathParts = path.split("/")
-    let current = this.data
-
-    for (let i = 0; i < pathParts.length - 1; i++) {
-      if (!current[pathParts[i]]) {
-        current[pathParts[i]] = {}
-      }
-      current = current[pathParts[i]]
-    }
-
-    current[pathParts[pathParts.length - 1]] = value
-
-    // Notify listeners
-    this.notifyListeners(path)
-  }
-
-  async get(path: string) {
-    const pathParts = path.split("/")
-    let current = this.data
-
-    for (const part of pathParts) {
-      if (!current[part]) {
-        return null
-      }
-      current = current[part]
-    }
-
-    return current
-  }
-
-  onValue(path: string, callback: Function) {
-    if (!this.listeners.has(path)) {
-      this.listeners.set(path, [])
-    }
-    this.listeners.get(path)!.push(callback)
-
-    // Call immediately with current data
-    this.get(path).then((data) => callback(data))
-
-    // Return unsubscribe function
-    return () => {
-      const callbacks = this.listeners.get(path)
-      if (callbacks) {
-        const index = callbacks.indexOf(callback)
-        if (index > -1) {
-          callbacks.splice(index, 1)
-        }
-      }
-    }
-  }
-
-  private notifyListeners(changedPath: string) {
-    // Notify all listeners that might be affected
-    for (const [listenerPath, callbacks] of this.listeners.entries()) {
-      if (changedPath.startsWith(listenerPath) || listenerPath.startsWith(changedPath)) {
-        this.get(listenerPath).then((data) => {
-          callbacks.forEach((callback) => callback(data))
-        })
-      }
-    }
+// Firebase শুরু করার ফাংশন
+function initializeFirebase() {
+  if (!app) {
+    app = initializeApp(firebaseConfig);
+    database = getDatabase(app);
   }
 }
 
+// এই ফাংশনটি নিশ্চিত করবে যে ডেটাবেস কানেকশন তৈরি হয়েছে
+function getDbInstance(): Database {
+    if (!database) {
+        initializeFirebase();
+    }
+    return database;
+}
+
+// ডেটা টাইপগুলো (এগুলো তোমার আগের কোড থেকেই নেওয়া)
 export interface MemberData {
-  nickname: string
-  streak: number
+  nickname: string;
+  streak: number;
 }
 
 export interface ScoreEntry {
-  score: number
-  note: string
+  score: number;
+  note: string;
 }
 
 export interface ScoreData {
-  [subject: string]: ScoreEntry
+  [subject: string]: ScoreEntry;
 }
 
 export interface SessionData {
-  members: Record<string, MemberData>
-  scores: Record<string, Record<string, ScoreData>>
+  members: Record<string, MemberData>;
+  scores: Record<string, Record<string, ScoreData>>;
 }
 
+// আসল Firebase ব্যবহার করে নতুন সেশন তৈরি করা
 export async function createSession(): Promise<string> {
-  const sessionCode = generateSessionCode()
-  const db = initializeFirebase()
-
-  await db.set(`sessions/${sessionCode}`, {
+  const db = getDbInstance();
+  const sessionCode = generateSessionCode();
+  const sessionRef = ref(db, `sessions/${sessionCode}`);
+  
+  await set(sessionRef, {
     members: {},
     scores: {},
-  })
+  });
 
-  return sessionCode
+  return sessionCode;
 }
 
-export async function joinSession(sessionCode: string, userId: string, nickname: string): Promise<void> {
-  const db = initializeFirebase()
+// আসল Firebase ব্যবহার করে সেশনে জয়েন করা
+export async function joinSession(sessionCode: string, userId: string, nickname: string): Promise<boolean> {
+  const db = getDbInstance();
+  const sessionRef = ref(db, `sessions/${sessionCode}`);
+  const snapshot = await get(sessionRef);
 
-  // Check if session exists
-  const session = await db.get(`sessions/${sessionCode}`)
-  if (!session) {
-    throw new Error("Session not found")
+  if (!snapshot.exists()) {
+    throw new Error("Session code not found.");
   }
 
-  // Add member to session
-  await db.set(`sessions/${sessionCode}/members/${userId}`, {
+  const memberRef = ref(db, `sessions/${sessionCode}/members/${userId}`);
+  await set(memberRef, {
     nickname,
     streak: 0,
-  })
+  });
+  return true;
 }
 
-export function listenToSession(sessionCode: string, callback: (data: SessionData) => void): () => void {
-  const db = initializeFirebase()
-  return db.onValue(`sessions/${sessionCode}`, callback)
+// আসল Firebase থেকে লাইভ সেশন ডেটা শোনা
+export function listenToSession(sessionCode: string, callback: (data: SessionData | null) => void): Unsubscribe {
+  const db = getDbInstance();
+  const sessionRef = ref(db, `sessions/${sessionCode}`);
+  
+  return onValue(sessionRef, (snapshot) => {
+    const data = snapshot.val() as SessionData | null;
+    callback(data);
+  });
 }
 
+// আসল Firebase-এ স্কোর আপডেট করা
 export async function updateScore(
   sessionCode: string,
   userId: string,
   scores: Record<string, number>,
   notes: Record<string, string>,
 ): Promise<void> {
-  const db = initializeFirebase()
-  const today = new Date().toISOString().split("T")[0]
+  const db = getDbInstance();
+  const today = new Date().toISOString().split("T")[0];
 
-  // Prepare score data with notes
-  const scoreData: ScoreData = {}
-  Object.entries(scores).forEach(([subject, score]) => {
+  const scoreData: ScoreData = {};
+  Object.keys(scores).forEach(subject => {
     scoreData[subject] = {
-      score,
+      score: scores[subject],
       note: notes[subject] || "",
-    }
-  })
+    };
+  });
+  
+  const scoreRef = ref(db, `sessions/${sessionCode}/scores/${userId}/${today}`);
+  await set(scoreRef, scoreData);
 
-  await db.set(`sessions/${sessionCode}/scores/${userId}/${today}`, scoreData)
-
-  // Update streak
-  const currentStreak = await calculateStreak(sessionCode, userId)
-  await db.set(`sessions/${sessionCode}/members/${userId}/streak`, currentStreak)
+  // Streak calculation could be added here if needed, or handled client-side
 }
 
+// আজকের স্কোর ডেটা পাওয়া
 export async function getTodayScores(sessionCode: string, userId: string): Promise<ScoreData> {
-  const db = initializeFirebase()
-  const today = new Date().toISOString().split("T")[0]
-
-  const scores = await db.get(`sessions/${sessionCode}/scores/${userId}/${today}`)
-  return scores || {}
+  const db = getDbInstance();
+  const today = new Date().toISOString().split("T")[0];
+  const scoresRef = ref(db, `sessions/${sessionCode}/scores/${userId}/${today}`);
+  
+  const snapshot = await get(scoresRef);
+  return snapshot.val() || {};
 }
 
-async function calculateStreak(sessionCode: string, userId: string): Promise<number> {
-  const db = initializeFirebase()
-  const userScores = (await db.get(`sessions/${sessionCode}/scores/${userId}`)) || {}
 
-  const dates = Object.keys(userScores).sort().reverse()
-  let streak = 0
-  const today = new Date()
-
-  for (let i = 0; i < dates.length; i++) {
-    const date = new Date(dates[i])
-    const daysDiff = Math.floor((today.getTime() - date.getTime()) / (1000 * 60 * 60 * 24))
-
-    if (daysDiff === i) {
-      const dayScores = userScores[dates[i]]
-      const hasAnyScore = Object.values(dayScores).some((entry: any) => entry.score > 0)
-      if (hasAnyScore) {
-        streak++
-      } else {
-        break
-      }
-    } else {
-      break
-    }
-  }
-
-  return streak
-}
-
+// সেশন কোড জেনারেট করার ফাংশন
 function generateSessionCode(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-  let result = ""
+  const chars = "ABCDEFGHIJKLMNPQRSTUVWXYZ123456789"; // O and 0 are removed to avoid confusion
+  let result = "";
   for (let i = 0; i < 6; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length))
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
   }
-  return result
+  return result;
 }
